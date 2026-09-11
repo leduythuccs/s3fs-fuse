@@ -409,6 +409,13 @@ The support for these different naming schemas causes an increased communication
 If you do not have access permissions to the bucket and specify a directory path created by a client other than s3fs for the mount point, you cannot start because the mount point directory cannot be found by s3fs. But by specifying this option, you can avoid this error.
 .RE
 .TP
+\fB\-o\fR no_perm_check - skip POSIX permission checks on access.
+.RS
+By default, s3fs checks the mode/uid/gid stored in an object's metadata against the requesting user before allowing access, and can return EACCES. This option skips that check: any access to an object that exists is allowed (existence and ENOENT handling are unaffected).
+.TP
+Useful for read-only mounts where S3-side authorization is the real access control and POSIX permission emulation is unnecessary overhead.
+.RE
+.TP
 \fB\-o\fR use_wtf8 - support arbitrary file system encoding.
 S3 requires all object names to be valid UTF-8. But some
 clients, notably Windows NFS clients, use their own encoding.

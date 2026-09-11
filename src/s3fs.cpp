@@ -95,6 +95,7 @@ static int64_t singlepart_copy_limit = 512 * 1024 * 1024;
 static bool is_region_specified   = false;
 static int s3fs_init_deferred_exit_status = 0;
 static bool support_compat_dir    = false;// default does not support compatibility directory type
+static bool no_perm_check         = false;// default does perform POSIX permission checks
 static int max_keys_list_object   = 1000;// default is 1000
 static off_t max_dirty_data       = 5LL * 1024LL * 1024LL * 1024LL;
 static bool use_wtf8              = false;
@@ -664,6 +665,15 @@ static int check_object_access(const char* path, int mask, struct stat* pstbuf)
 
     S3FS_PRN_DBG("[path=%s]", path);
 
+    if(no_perm_check){
+        // [NOTE]
+        // Skip POSIX permission enforcement, but still resolve the object
+        // below so existence(-ENOENT) is reported normally. The existing
+        // F_OK case already just confirms existence, so route through it.
+        //
+        mask = F_OK;
+    }
+
     if(nullptr == (pcxt = fuse_get_context())){
         return -EIO;
     }
@@ -770,6 +780,20 @@ static int check_parent_object_access(const char* path, int mask)
     int result;
 
     S3FS_PRN_DBG("[path=%s]", path);
+
+    if(no_perm_check){
+        // [NOTE]
+        // This function only checks traversal/write permission on ancestor
+        // directories; it never determines whether the target path itself
+        // exists(the caller's own check_object_access() on the leaf path
+        // does that separately). With permission enforcement disabled there
+        // is nothing left for it to usefully deny, so skip the ancestor
+        // walk entirely rather than let each iteration run through
+        // check_object_access() only to immediately no-op via its own
+        // no_perm_check handling.
+        //
+        return 0;
+    }
 
     if(0 == strcmp(path, "/") || 0 == strcmp(path, ".")){
         // path is mount point.
@@ -5802,6 +5826,10 @@ static int my_fuse_opt_proc(void* data, const char* arg, int key, struct fuse_ar
         }
         else if(0 == strcmp(arg, "compat_dir")){
             support_compat_dir = true;
+            return 0;
+        }
+        else if(0 == strcmp(arg, "no_perm_check")){
+            no_perm_check = true;
             return 0;
         }
         else if(0 == strcmp(arg, "enable_content_md5")){
