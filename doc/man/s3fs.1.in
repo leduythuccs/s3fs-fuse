@@ -416,6 +416,13 @@ By default, s3fs checks the mode/uid/gid stored in an object's metadata against 
 Useful for read-only mounts where S3-side authorization is the real access control and POSIX permission emulation is unnecessary overhead.
 .RE
 .TP
+\fB\-o\fR dummy_stat - skip per-object HEAD requests during readdir.
+.RS
+By default, listing a directory issues one HEAD request per object(in parallel) to build accurate stat info, since ListObjectsV2 does not return S3 metadata such as POSIX mode/uid/gid. This option instead synthesizes stat info from the listing response itself(size, mtime, etag are accurate; mode/uid/gid fall back to the \-o uid=/gid=/umask= defaults), eliminating those HEAD requests.
+.TP
+Since the synthesized size is accurate, files listed this way can also be opened afterward without a HEAD request. Existence(ENOENT) handling for paths not returned by the listing is unaffected.
+.RE
+.TP
 \fB\-o\fR use_wtf8 - support arbitrary file system encoding.
 S3 requires all object names to be valid UTF-8. But some
 clients, notably Windows NFS clients, use their own encoding.

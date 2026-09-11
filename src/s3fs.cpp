@@ -96,6 +96,7 @@ static bool is_region_specified   = false;
 static int s3fs_init_deferred_exit_status = 0;
 static bool support_compat_dir    = false;// default does not support compatibility directory type
 static bool no_perm_check         = false;// default does perform POSIX permission checks
+static bool dummy_stat            = false;// default fetches real per-object stat via HEAD during readdir
 static int max_keys_list_object   = 1000;// default is 1000
 static off_t max_dirty_data       = 5LL * 1024LL * 1024LL * 1024LL;
 static bool use_wtf8              = false;
@@ -3770,6 +3771,52 @@ static int readdir_multi_head(const std::string& strpath, const S3ObjList& head,
             continue;
         }
 
+        if(dummy_stat){
+            // [NOTE]
+            // Synthesize stat directly from the ListObjectsV2 response
+            // instead of issuing a HEAD request: it already carries
+            // size/mtime/etag for every entry, and per-object POSIX
+            // mode/uid/gid don't exist in S3 metadata anyway when this
+            // option is used, so fall back to the configured -o
+            // uid=/gid=/umask= defaults, mirroring the dummy directory
+            // entries built below for the compat_dir case.
+            //
+            bool   is_dir_type = IS_DIR_OBJ(objtype);
+            mode_t dirmask     = umask(0);      // macos does not have getumask()
+            umask(dirmask);
+
+            headers_t dummy_header;
+            off_t     size = head.GetSize(path.c_str());
+            if(0 <= size){
+                dummy_header["Content-Length"] = std::to_string(size);
+            }
+            if(auto epoch = get_unixtime_from_iso8601(head.GetLastModified(path.c_str()).c_str())){
+                dummy_header["x-amz-meta-mtime"] = std::to_string(*epoch);
+            }
+            if(!etag.empty()){
+                dummy_header["ETag"] = etag;
+            }
+            dummy_header["x-amz-meta-uid"]  = std::to_string(is_s3fs_uid ? s3fs_uid : geteuid());
+            dummy_header["x-amz-meta-gid"]  = std::to_string(is_s3fs_gid ? s3fs_gid : getegid());
+            dummy_header["x-amz-meta-mode"] = std::to_string((is_dir_type ? S_IFDIR : S_IFREG) | (~dirmask & (S_IRWXU | S_IRWXG | S_IRWXO)));
+
+            std::string bpath = mybasename(disppath);
+            if(use_wtf8){
+                bpath = s3fs_wtf8_decode(bpath);
+            }
+            if(convert_header_to_stat(disppath, dummy_header, st, is_dir_type) &&
+               StatCache::getStatCacheData()->AddStat(disppath, st, dummy_header, objtype, false))
+            {
+                if(0 != syncfiller.Fill(bpath, &st, 0)){
+                    S3FS_PRN_ERR("filler could not add entry(%s), so abort readdir.", bpath.c_str());
+                    sched_result = -ENOMEM;
+                    break;
+                }
+                continue;
+            }
+            S3FS_PRN_ERR("failed to synthesize dummy stat[path=%s], falling back to head request.", disppath.c_str());
+        }
+
         // set one head request
         int result;
         if(0 != (result = multi_head_request(disppath, syncfiller, thparam_lock, retrycount, notfound_list, use_wtf8, objtype, req_result, multi_head_sem))){
@@ -5830,6 +5877,10 @@ static int my_fuse_opt_proc(void* data, const char* arg, int key, struct fuse_ar
         }
         else if(0 == strcmp(arg, "no_perm_check")){
             no_perm_check = true;
+            return 0;
+        }
+        else if(0 == strcmp(arg, "dummy_stat")){
+            dummy_stat = true;
             return 0;
         }
         else if(0 == strcmp(arg, "enable_content_md5")){
