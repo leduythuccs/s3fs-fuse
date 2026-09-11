@@ -423,6 +423,13 @@ By default, listing a directory issues one HEAD request per object(in parallel) 
 Since the synthesized size is accurate, files listed this way can also be opened afterward without a HEAD request. Existence(ENOENT) handling for paths not returned by the listing is unaffected.
 .RE
 .TP
+\fB\-o\fR readdir_max_pages (default is "0"(unlimited))
+.RS
+Caps the number of ListObjectsV2 pages(list_object_max_keys entries each) fetched for a single readdir/ls call. This is a safety net against accidentally large directories(e.g. one triggered by shell completion): once the cap is reached, the listing stops and a warning is logged, instead of following every remaining page.
+.TP
+Results become incomplete beyond the cap, so leave this unset for directories where a complete listing matters.
+.RE
+.TP
 \fB\-o\fR use_wtf8 - support arbitrary file system encoding.
 S3 requires all object names to be valid UTF-8. But some
 clients, notably Windows NFS clients, use their own encoding.

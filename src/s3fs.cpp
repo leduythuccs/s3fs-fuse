@@ -97,6 +97,7 @@ static int s3fs_init_deferred_exit_status = 0;
 static bool support_compat_dir    = false;// default does not support compatibility directory type
 static bool no_perm_check         = false;// default does perform POSIX permission checks
 static bool dummy_stat            = false;// default fetches real per-object stat via HEAD during readdir
+static int readdir_max_pages      = 0;// default 0 = unlimited listing pages per readdir
 static int max_keys_list_object   = 1000;// default is 1000
 static off_t max_dirty_data       = 5LL * 1024LL * 1024LL * 1024LL;
 static bool use_wtf8              = false;
@@ -3990,7 +3991,8 @@ static int list_bucket(const char* path, S3ObjList& head, const char* delimiter,
     std::string query_maxkey;
     std::string next_continuation_token;
     std::string next_marker;
-    bool truncated = true;
+    bool truncated  = true;
+    int  page_count = 0;
 
     S3FS_PRN_INFO1("[path=%s]", path);
 
@@ -4076,7 +4078,21 @@ static int list_bucket(const char* path, S3ObjList& head, const char* delimiter,
             S3FS_PRN_ERR("append_objects_from_xml returns with error.");
             return -EIO;
         }
-        if(true == (truncated = is_truncated(doc.get()))){
+        ++page_count;
+
+        truncated = is_truncated(doc.get());
+        if(truncated && !check_content_only && 0 < readdir_max_pages && readdir_max_pages <= page_count){
+            // [NOTE]
+            // Safety net for accidentally large directories(e.g. triggered by
+            // shell completion): stop paginating once the page cap is hit,
+            // rather than following every page S3 reports as truncated.
+            // Results are silently incomplete beyond this point; only the
+            // warning below signals that.
+            //
+            S3FS_PRN_WARN("listing[path=%s] stopped early after %d page(s) because readdir_max_pages=%d was reached; results are incomplete.", path, page_count, readdir_max_pages);
+            truncated = false;
+        }
+        if(truncated){
             auto tmpch = get_next_continuation_token(doc.get());
             if(nullptr != tmpch){
                 next_continuation_token = reinterpret_cast<const char*>(tmpch.get());
@@ -5881,6 +5897,15 @@ static int my_fuse_opt_proc(void* data, const char* arg, int key, struct fuse_ar
         }
         else if(0 == strcmp(arg, "dummy_stat")){
             dummy_stat = true;
+            return 0;
+        }
+        else if(is_prefix(arg, "readdir_max_pages=")){
+            int max_pages = static_cast<int>(cvt_strtoofft(strchr(arg, '=') + sizeof(char), /*base=*/ 10));
+            if(max_pages < 0){
+                S3FS_PRN_EXIT("argument should be 0 or higher: readdir_max_pages");
+                return -1;
+            }
+            readdir_max_pages = max_pages;
             return 0;
         }
         else if(0 == strcmp(arg, "enable_content_md5")){
