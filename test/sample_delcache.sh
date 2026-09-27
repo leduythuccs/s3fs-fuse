@@ -46,6 +46,35 @@ func_usage()
     echo ""
 }
 
+#
+# Convert a byte count into a human readable size(ex. "1.5GiB")
+#
+func_human()
+{
+    echo "$1" | awk '{
+        SIZE = $1 + 0
+        split("B KiB MiB GiB TiB PiB", UNIT, " ")
+        IDX  = 1
+        while(1024 <= SIZE && IDX < 6){
+            SIZE = SIZE / 1024
+            IDX++
+        }
+        if(1 == IDX){
+            printf "%dB", SIZE
+        }else{
+            printf "%.1f%s", SIZE, UNIT[IDX]
+        }
+    }'
+}
+
+#
+# Output a message with the current date and time
+#
+func_log()
+{
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1"
+}
+
 PRGNAME=$(basename "$0")
 
 if [ "$1" = "-h" ] || [ "$1" = "-H" ]; then
@@ -72,7 +101,7 @@ CURRENT_CACHE_SIZE=$(du -sb "${FILES_CDIR}" | awk '{print $1}')
 #
 if [ "${LIMIT}" -ge "${CURRENT_CACHE_SIZE}" ]; then
     if [ $SILENT -ne 1 ]; then
-        echo "${FILES_CDIR} (${CURRENT_CACHE_SIZE}) is below allowed ${LIMIT}"
+        func_log "${FILES_CDIR} ($(func_human "${CURRENT_CACHE_SIZE}")) is below allowed $(func_human "${LIMIT}")"
     fi
     exit 0
 fi
@@ -102,7 +131,7 @@ do
         TMP_CSIZE=$(stat -c %s "${TMP_CFILE}" 2>/dev/null || echo 0)
         if ! rm "${TMP_STATS}" "${TMP_CFILE}" > /dev/null 2>&1; then
             if [ "${SILENT}" -ne 1 ]; then
-                echo "ERROR: Could not remove files(${TMP_STATS},${TMP_CFILE})"
+                func_log "ERROR: Could not remove files(${TMP_STATS},${TMP_CFILE})"
             fi
             exit 1
         else
@@ -114,7 +143,7 @@ do
     fi
     if [ "${LIMIT}" -ge "${TOTAL_REMAIN}" ]; then
         if [ "${SILENT}" -ne 1 ]; then
-            echo "finish removing files"
+            func_log "finish removing files"
         fi
         break
     fi
@@ -122,7 +151,7 @@ done
 
 if [ "${SILENT}" -ne 1 ]; then
     TOTAL_SIZE=$(du -sb "${FILES_CDIR}" | awk '{print $1}')
-    echo "Finish: ${FILES_CDIR} total size is ${TOTAL_SIZE}"
+    func_log "Finish: ${FILES_CDIR} total size is $(func_human "${TOTAL_SIZE}")"
 fi
 
 exit 0
