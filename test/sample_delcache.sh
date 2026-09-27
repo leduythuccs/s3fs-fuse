@@ -84,6 +84,11 @@ TMP_ATIME=0
 TMP_STATS=""
 TMP_CFILE=""
 #
+# Remaining total size, decremented as files are removed so that the
+# whole cache tree does not have to be re-scanned after each deletion.
+#
+TOTAL_REMAIN="${CURRENT_CACHE_SIZE}"
+#
 # Make file list by sorted access time
 #
 find "${STATS_CDIR}" -type f -exec stat -c "%X:%n" "{}" \; | sort | while read -r part
@@ -94,18 +99,20 @@ do
     TMP_CFILE=$(echo "${TMP_STATS}" | sed -e "s/\\.${BUCKET}\\.stat/${BUCKET}/")
 
     if [ "$(stat -c %X "${TMP_STATS}")" -eq "${TMP_ATIME}" ]; then
+        TMP_CSIZE=$(stat -c %s "${TMP_CFILE}" 2>/dev/null || echo 0)
         if ! rm "${TMP_STATS}" "${TMP_CFILE}" > /dev/null 2>&1; then
             if [ "${SILENT}" -ne 1 ]; then
                 echo "ERROR: Could not remove files(${TMP_STATS},${TMP_CFILE})"
             fi
             exit 1
         else
+            TOTAL_REMAIN=$((TOTAL_REMAIN - TMP_CSIZE))
             if [ "${SILENT}" -ne 1 ]; then
                 echo "remove file: ${TMP_CFILE}	${TMP_STATS}"
             fi
         fi
     fi
-    if [ "${LIMIT}" -ge "$(du -sb "${FILES_CDIR}" | awk '{print $1}')" ]; then
+    if [ "${LIMIT}" -ge "${TOTAL_REMAIN}" ]; then
         if [ "${SILENT}" -ne 1 ]; then
             echo "finish removing files"
         fi
