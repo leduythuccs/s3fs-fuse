@@ -2485,6 +2485,37 @@ bool FdEntity::GetOrgMeta(headers_t& meta) const
     return true;
 }
 
+// [NOTE]
+// Only an object which was read from S3 has an ETag in its original headers.
+// A file created locally and not uploaded yet does not have it.
+//
+bool FdEntity::HasRemoteOrigin() const
+{
+    const std::lock_guard<std::mutex> lock(fdent_lock);
+
+    auto iter = orgmeta.find("etag");
+    return (orgmeta.cend() != iter && !iter->second.empty());
+}
+
+// [NOTE]
+// Compare the original headers with the headers just got from S3.
+// If both have an ETag, it is compared. Otherwise, compare the size and mtime.
+//
+bool FdEntity::IsRemoteChanged(const headers_t& meta) const
+{
+    const std::lock_guard<std::mutex> lock(fdent_lock);
+
+    auto orgiter = orgmeta.find("etag");
+    auto newiter = meta.find("etag");
+    if(orgmeta.cend() != orgiter && !orgiter->second.empty() && meta.cend() != newiter && !newiter->second.empty()){
+        return (orgiter->second != newiter->second);
+    }
+    if(get_size(orgmeta) != get_size(meta)){
+        return true;
+    }
+    return (0 != compare_timespec(get_mtime(orgmeta), get_mtime(meta)));
+}
+
 int FdEntity::UploadPendingHasLock(int fd)
 {
     int result;

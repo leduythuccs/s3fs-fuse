@@ -120,6 +120,7 @@ class FdManager
       FdEntity* OpenExistFdEntity(const char* path, int& fd, int flags = O_RDONLY);
       void Rename(const std::string &from, const std::string &to);
       bool Close(FdEntity* ent, int fd);
+      bool DetachEntity(const char* path);
       bool ChangeEntityToTempPath(std::shared_ptr<FdEntity> ent, const char* path);
       void CleanupCacheDir();
 

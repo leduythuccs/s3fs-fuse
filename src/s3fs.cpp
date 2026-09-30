@@ -98,6 +98,7 @@ static bool support_compat_dir    = false;// default does not support compatibil
 static bool no_perm_check         = false;// default does perform POSIX permission checks
 static bool dummy_stat            = false;// default fetches real per-object stat via HEAD during readdir
 static int readdir_max_pages      = 0;// default 0 = unlimited listing pages per readdir
+static bool revalidate_open       = false;// default does not re-check S3 for a file already opened by another handle
 static int max_keys_list_object   = 1000;// default is 1000
 static off_t max_dirty_data       = 5LL * 1024LL * 1024LL * 1024LL;
 static bool use_wtf8              = false;
@@ -969,6 +970,29 @@ static int s3fs_getattr(const char* _path, struct stat* stbuf, struct fuse_file_
             stbuf->st_blocks  = get_blocks(stbuf->st_size);
         }
         return 0;
+    }
+
+    // [NOTE]
+    // With revalidate_open, the entity of an opened file may have been
+    // detached from its path because the object was replaced or removed on
+    // S3. The path now refers to the current object(or nothing), so the
+    // stats for this file handle are served from the detached entity in the
+    // same way as for the null path above.
+    //
+    if(info){
+        AutoFdEntity autoent;
+        const FdEntity* ent;
+        if(nullptr != (ent = autoent.GetExistFdEntityByPseudoFd(static_cast<int>(info->fh))) && ent->IsDetached()){
+            FUSE_CTX_INFO("[path=%s][pseudo_fd=%llu] detached entity", _path, (unsigned long long)(info->fh));
+            if(stbuf){
+                if(!ent->GetStatsFromMeta(*stbuf)){
+                    return -EIO;
+                }
+                stbuf->st_blksize = 4096;
+                stbuf->st_blocks  = get_blocks(stbuf->st_size);
+            }
+            return 0;
+        }
     }
 
     WTF8_ENCODE(path)
@@ -3196,6 +3220,29 @@ static int s3fs_truncate(const char* _path, off_t size, struct fuse_file_info* i
     return result;
 }
 
+//
+// Drop the attributes(and page cache) which the kernel keeps for path.
+//
+// [NOTE]
+// The kernel got the file size at lookup before open(), and it does not read
+// beyond that size until its attribute cache expires. If open() finds that the
+// object on S3 was replaced, the kernel must be told to get the attributes again.
+// The path must be the original path passed by FUSE(not WTF8 encoded).
+//
+static void invalidate_kernel_attr(const char* fusepath)
+{
+    const struct fuse_context* pcxt;
+    if(nullptr == (pcxt = fuse_get_context()) || nullptr == pcxt->fuse){
+        return;
+    }
+    int result = fuse_invalidate_path(pcxt->fuse, fusepath);
+    if(0 != result && -ENOENT != result){
+        S3FS_PRN_WARN("failed to invalidate kernel attributes for %s(result=%d), but continue...", fusepath, result);
+    }else{
+        S3FS_PRN_INFO("invalidated kernel attributes for %s", fusepath);
+    }
+}
+
 static int s3fs_open(const char* _path, struct fuse_file_info* fi)
 {
     if(!_path || '\0' == _path[0]){
@@ -3214,13 +3261,47 @@ static int s3fs_open(const char* _path, struct fuse_file_info* fi)
     }
 
     // [NOTE]
+    // Keep what the stats cache had before open. It is what the kernel was
+    // given at lookup, and if the object turns out to be different, the
+    // kernel attributes are invalidated after opening.
+    //
+    struct stat prev_st  = {};
+    headers_t   prev_meta;
+    bool        has_prev = revalidate_open && StatCache::getStatCacheData()->GetStat(path, &prev_st);
+    if(has_prev && !StatCache::getStatCacheData()->GetStat(path, &prev_meta)){
+        prev_meta.clear();      // the cache may have only the stat structure
+    }
+
+    // [NOTE]
+    // With revalidate_open, a file which is already opened by another
+    // handle and has not been changed locally is checked against the object
+    // on S3, since the stats cache and the opened entity may be older than
+    // it(it may have been replaced or removed by another client).
+    // A file which is modified or created locally(not uploaded yet) is
+    // shared as before, because the local data takes priority.
+    //
+    bool         is_opened = FdManager::HasOpenEntityFd(path);
+    AutoFdEntity revalent;
+    FdEntity*    prevalent = nullptr;
+    if(revalidate_open && is_opened){
+        FdEntity* oent;
+        if(nullptr != (oent = revalent.OpenExistFdEntity(path)) && !oent->IsModified() && !oent->HaveUploadPending() && oent->HasRemoteOrigin()){
+            prevalent = oent;
+        }else{
+            revalent.Close();
+        }
+    }
+
+    // [NOTE]
     // Delete the Stats cache only if the file is not open.
     // If the file is open, the stats cache will not be deleted as
     // there are cases where the object does not exist on the server
     // and only the Stats cache exists.
+    // The opened file to be revalidated is also deleted, so that the
+    // following HEAD request gets the current object.
     //
     if(StatCache::getStatCacheData()->HasStat(path)){
-        if(!FdManager::HasOpenEntityFd(path)){
+        if(!is_opened || prevalent){
             // remove stat cache
             StatCache::getStatCacheData()->DelStat(path);
         }
@@ -3232,6 +3313,18 @@ static int s3fs_open(const char* _path, struct fuse_file_info* fi)
     }
 
     result = check_object_access(path, mask, &st);
+    if(prevalent && -ENOENT == result){
+        // [NOTE]
+        // The object was removed on S3 while it is opened, so detach the
+        // opened entity. The handles which have already opened keep using it.
+        //
+        S3FS_PRN_INFO("object(%s) was removed on S3 while it is opened, so detach the opened entity.", path);
+        revalent.Close();
+        FdManager::get()->DetachEntity(path);
+        StatCache::getStatCacheData()->DelStat(path);
+        invalidate_kernel_attr(_path);
+        return -ENOENT;
+    }
     if(-ENOENT == result){
         if(0 != (result = check_parent_object_access(path, W_OK))){
             return result;
@@ -3271,6 +3364,43 @@ static int s3fs_open(const char* _path, struct fuse_file_info* fi)
         return result;
     }
 
+    if(prevalent){
+        // [NOTE]
+        // meta was got by the HEAD request above(the stats cache was deleted),
+        // so compare it with the opened entity. If it is different, detach the
+        // opened entity so that this open gets the current object. The handles
+        // which have already opened keep using the detached entity.
+        //
+        if(prevalent->IsRemoteChanged(meta)){
+            S3FS_PRN_INFO("object(%s) was changed on S3 while it is opened, so detach the opened entity.", path);
+            revalent.Close();
+            autoent.Close();
+            FdManager::get()->DetachEntity(path);
+        }
+        revalent.Close();
+
+        // Keep the stats of the opened file with no truncate flag, as the other opened files.
+        struct stat freshst;
+        if(convert_header_to_stat(path, meta, freshst, false)){
+            StatCache::getStatCacheData()->AddStat(path, freshst, meta, objtype_t::FILE, true);
+        }
+    }
+
+    // [NOTE]
+    // Check whether the attributes given to the kernel at lookup are
+    // different from the current object.
+    //
+    bool attr_changed = false;
+    if(has_prev){
+        auto prev_etag = prev_meta.find("etag");
+        auto cur_etag  = meta.find("etag");
+        if(get_size(meta) != prev_st.st_size){
+            attr_changed = true;
+        }else if(prev_meta.cend() != prev_etag && meta.cend() != cur_etag && prev_etag->second != cur_etag->second){
+            attr_changed = true;
+        }
+    }
+
     FileTimes ts_times;     // Default: all time values are set UTIME_OMIT
     ts_times.SetAll(st);
     int error = 0;
@@ -3281,6 +3411,10 @@ static int s3fs_open(const char* _path, struct fuse_file_info* fi)
         // remove stat cache
         StatCache::getStatCacheData()->DelStat(path);
         return error;
+    }
+
+    if(attr_changed){
+        invalidate_kernel_attr(_path);
     }
 
     if (needs_flush){
@@ -5893,6 +6027,10 @@ static int my_fuse_opt_proc(void* data, const char* arg, int key, struct fuse_ar
         }
         else if(0 == strcmp(arg, "no_perm_check")){
             no_perm_check = true;
+            return 0;
+        }
+        else if(0 == strcmp(arg, "revalidate_open")){
+            revalidate_open = true;
             return 0;
         }
         else if(0 == strcmp(arg, "dummy_stat")){

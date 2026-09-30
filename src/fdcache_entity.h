@@ -21,6 +21,7 @@
 #ifndef S3FS_FDCACHE_ENTITY_H_
 #define S3FS_FDCACHE_ENTITY_H_
 
+#include <atomic>
 #include <cstdint>
 #include <fcntl.h>
 #include <memory>
@@ -80,6 +81,7 @@ class FdEntity : public std::enable_shared_from_this<FdEntity>
         FileTimes          timestamps     GUARDED_BY(fdent_data_lock);   // file timestamps(atime/ctime/mtime)
         mutable std::mutex ro_path_lock;                                 // for only the ro_path variable
         std::string        ro_path        GUARDED_BY(ro_path_lock);      // holds the same value as "path". this is used as a backup(read-only variable) by special functions only.
+        std::atomic<bool>  detached{false};                              // detached from its path because the object on S3 was replaced or removed
 
     private:
         static int FillFile(int fd, unsigned char byte, off_t size, off_t start);
@@ -175,6 +177,10 @@ class FdEntity : public std::enable_shared_from_this<FdEntity>
         bool IsModified() const;
         bool MergeOrgMeta(headers_t& updatemeta);
         bool GetOrgMeta(headers_t& meta) const;
+        bool HasRemoteOrigin() const;
+        bool IsRemoteChanged(const headers_t& meta) const;
+        void MarkDetached() { detached = true; }
+        bool IsDetached() const { return detached; }
 
         [[nodiscard]] int UploadPending(int fd) {
             const std::lock_guard<std::mutex> lock(fdent_lock);

@@ -507,7 +507,7 @@ FdEntity* FdManager::GetFdEntityHasLock(const char* path, int& existfd, bool new
         // when the file is opened.
         if(!FdManager::IsCacheDir()){
             for(const auto& [entpath, entity] : fent){
-                if(entity && entity->IsOpen() && entity->GetROPath() == path){
+                if(entity && entity->IsOpen() && !entity->IsDetached() && entity->GetROPath() == path){
                     return entity.get();
                 }
             }
@@ -537,7 +537,7 @@ FdEntity* FdManager::Open(int& fd, const char* path, const headers_t* pmeta, off
         // search a entity in all which opened the temporary file.
         //
         for(iter = fent.begin(); iter != fent.end(); ++iter){
-            if(iter->second && iter->second->IsOpen() && iter->second->GetPath() == path){
+            if(iter->second && iter->second->IsOpen() && !iter->second->IsDetached() && iter->second->GetPath() == path){
                 break;      // found opened fd in mapping
             }
         }
@@ -622,16 +622,21 @@ FdEntity* FdManager::GetExistFdEntity(const char* path, int existfd)
       if(iter->second && iter->second->FindPseudoFd(existfd)){
         return iter->second.get();
       }
-    } else {
-      // no matter use_cache is enabled or not, search from all entities to
-      // find the entity with the same path. And then compare the pseudo fd.
-      for(const auto& [entpath, entity] : fent) {
-        // GetROPath() holds ro_path_lock rather than fdent_lock.
-        // Therefore GetExistFdEntity does not contends with FdEntity::Read() / Write().
-        if(entity && (entity->GetROPath() == path)
-           && entity->FindPseudoFd(existfd)) {
-          return entity.get();
-        }
+    }
+
+    // [NOTE]
+    // No matter use_cache is enabled or not, search from all entities to
+    // find the entity with the same path. And then compare the pseudo fd.
+    // This is also needed when the entity mapped by path does not own the
+    // pseudo fd, because the entity which owns it may have been detached
+    // (see DetachEntity).
+    //
+    for(const auto& [entpath, entity] : fent) {
+      // GetROPath() holds ro_path_lock rather than fdent_lock.
+      // Therefore GetExistFdEntity does not contends with FdEntity::Read() / Write().
+      if(entity && (entity->GetROPath() == path)
+         && entity->FindPseudoFd(existfd)) {
+        return entity.get();
       }
     }
 
@@ -703,7 +708,7 @@ int FdManager::GetPseudoFdCount(const char* path)
 
     // search from all entity.
     for(const auto& [entpath, entity] : fent){
-        if(entity && entity->GetPath() == path){
+        if(entity && !entity->IsDetached() && entity->GetPath() == path){
             // found the entity for the path
             return entity->GetOpenCount();
         }
@@ -726,7 +731,7 @@ void FdManager::Rename(const std::string &from, const std::string &to)
         // search a entity in all which opened the temporary file.
         //
         for(iter = fent.begin(); iter != fent.end(); ++iter){
-            if(iter->second && iter->second->IsOpen() && iter->second->GetPath() == from){
+            if(iter->second && iter->second->IsOpen() && !iter->second->IsDetached() && iter->second->GetPath() == from){
                 break;              // found opened fd in mapping
             }
         }
@@ -784,6 +789,52 @@ bool FdManager::Close(FdEntity* ent, int fd)
         }
     }
     return false;
+}
+
+// [NOTE]
+// Detach the entity opened for path from it, because the object on S3 was
+// replaced or removed by another client.
+// The entity is moved to a temporary key, so the handles which have already
+// opened it keep using it(they are found by pseudo fd), while the next open
+// of path creates a new entity.
+// The cache file is also removed, so the new entity starts with an empty
+// cache file. The detached entity keeps the old data through its mirror file.
+//
+bool FdManager::DetachEntity(const char* path)
+{
+    S3FS_PRN_INFO("[path=%s]", SAFESTRPTR(path));
+
+    if(!path || '\0' == path[0]){
+        return false;
+    }
+    const std::lock_guard<std::mutex> lock(FdManager::fd_manager_lock);
+
+    UpdateEntityToTempPath();
+
+    bool detached = false;
+    if(auto iter = fent.find(path); fent.end() != iter && iter->second){
+        std::string tmppath;
+        FdManager::MakeRandomTempPath(path, tmppath);
+
+        auto ent = std::move(iter->second);
+        fent.erase(iter);
+        ent->MarkDetached();
+        fent.insert_or_assign(tmppath, std::move(ent));
+        detached = true;
+    }else if(!FdManager::IsCacheDir()){
+        // Without the cache directory, the key is already a temporary path.
+        for(const auto& [entpath, entity] : fent){
+            if(entity && entity->IsOpen() && !entity->IsDetached() && entity->GetROPath() == path){
+                entity->MarkDetached();
+                detached = true;
+            }
+        }
+    }
+
+    // remove cache file and cache stat file
+    FdManager::DeleteCacheFile(path);
+
+    return detached;
 }
 
 bool FdManager::ChangeEntityToTempPath(std::shared_ptr<FdEntity> ent, const char* path)
