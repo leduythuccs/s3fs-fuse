@@ -822,11 +822,20 @@ void PageList::ClearAllModified()
     Compress();
 }
 
-bool PageList::Serialize(const CacheFileStat& file, ino_t inode) const
+// [NOTE]
+// The head line is "<inode>:<size>[:<etag>]".
+// The etag is the ETag of the object the cached data was downloaded from,
+// it is used to find out that the object was replaced. Older versions
+// read only the first two parts, so they can still load this format.
+//
+bool PageList::Serialize(const CacheFileStat& file, ino_t inode, const std::string& etag) const
 {
     // make contents
     std::ostringstream ssall;
     ssall << inode << ":" << Size();
+    if(!etag.empty() && std::string::npos == etag.find_first_of("\r\n")){
+        ssall << ":" << etag;
+    }
 
     for(auto iter = pages.cbegin(); iter != pages.cend(); ++iter){
         ssall << "\n" << iter->offset << ":" << iter->bytes << ":" << (iter->loaded ? "1" : "0") << ":" << (iter->modified ? "1" : "0");
@@ -840,8 +849,11 @@ bool PageList::Serialize(const CacheFileStat& file, ino_t inode) const
     return true;
 }
 
-bool PageList::Deserialize(CacheFileStat& file, ino_t inode)
+bool PageList::Deserialize(CacheFileStat& file, ino_t inode, std::string* petag)
 {
+    if(petag){
+        petag->clear();
+    }
     if(!file.Open()){
         return false;
     }
@@ -895,12 +907,17 @@ bool PageList::Deserialize(CacheFileStat& file, ino_t inode)
             total       = cvt_strtoofft(strhead1.c_str(), /* base= */10);
             cache_inode = 0;
         }else{
-            // current head format is "<inode>:<size>\n"
+            // current head format is "<inode>:<size>[:<etag>]\n"
             total       = cvt_strtoofft(strhead2.c_str(), /* base= */10);
             cache_inode = static_cast<ino_t>(cvt_strtoofft(strhead1.c_str(), /* base= */10));
             if(0 == cache_inode){
                 S3FS_PRN_ERR("wrong inode number in parsed cache stats.");
                 return false;
+            }
+            // the rest of head line is etag(it may contain ':')
+            std::string strhead3;
+            if(petag && getline(sshead, strhead3)){
+                *petag = strhead3;
             }
         }
     }

@@ -2421,7 +2421,7 @@ function test_cache_file_stat() {
     #
     # get lines from cache stat file
     #
-    local CACHE_FILE_STAT_LINE_1; CACHE_FILE_STAT_LINE_1=$(sed -n 1p "${CACHE_DIR}/.${TEST_BUCKET_1}.stat/${CACHE_TESTRUN_DIR}/${BIG_FILE}")
+    local CACHE_FILE_STAT_LINE_1; CACHE_FILE_STAT_LINE_1=$(sed -n 1p "${CACHE_DIR}/.${TEST_BUCKET_1}.stat/${CACHE_TESTRUN_DIR}/${BIG_FILE}" | cut -d ":" -f1-2)       # "<inode>:<size>[:<etag>]"
     local CACHE_FILE_STAT_LINE_2; CACHE_FILE_STAT_LINE_2=$(sed -n 2p "${CACHE_DIR}/.${TEST_BUCKET_1}.stat/${CACHE_TESTRUN_DIR}/${BIG_FILE}")
     if [ -z "${CACHE_FILE_STAT_LINE_1}" ] || [ -z "${CACHE_FILE_STAT_LINE_2}" ]; then
         echo "could not get first or second line from cache file stat: ${CACHE_DIR}/.${TEST_BUCKET_1}.stat/${CACHE_TESTRUN_DIR}/${BIG_FILE}"
@@ -2464,7 +2464,7 @@ function test_cache_file_stat() {
     #
     # get lines from cache stat file
     #
-    CACHE_FILE_STAT_LINE_1=$(sed -n 1p "${CACHE_DIR}/.${TEST_BUCKET_1}.stat/${CACHE_TESTRUN_DIR}/${BIG_FILE}")
+    CACHE_FILE_STAT_LINE_1=$(sed -n 1p "${CACHE_DIR}/.${TEST_BUCKET_1}.stat/${CACHE_TESTRUN_DIR}/${BIG_FILE}" | cut -d ":" -f1-2)       # "<inode>:<size>[:<etag>]"
     local CACHE_FILE_STAT_LINE_E; CACHE_FILE_STAT_LINE_E=$(tail -1 "${CACHE_DIR}/.${TEST_BUCKET_1}.stat/${CACHE_TESTRUN_DIR}/${BIG_FILE}" 2>/dev/null)
     if [ -z "${CACHE_FILE_STAT_LINE_1}" ] || [ -z "${CACHE_FILE_STAT_LINE_E}" ]; then
         echo "could not get first or end line from cache file stat: ${CACHE_DIR}/.${TEST_BUCKET_1}.stat/${CACHE_TESTRUN_DIR}/${BIG_FILE}"

@@ -57,6 +57,20 @@ bool FdEntity::mixmultipart = true;
 bool FdEntity::streamupload = false;
 
 //------------------------------------------------
+// Utility
+//------------------------------------------------
+// [NOTE]
+// Returns the ETag in the headers, or an empty string.
+// It is saved with the cache file, so that a cache file of an object
+// that was replaced on S3 is not used.
+//
+static std::string get_meta_etag(const headers_t& meta)
+{
+    auto iter = meta.find("etag");
+    return (meta.cend() != iter ? iter->second : std::string());
+}
+
+//------------------------------------------------
 // FdEntity class methods
 //------------------------------------------------
 bool FdEntity::SetNoMixMultipart()
@@ -170,7 +184,7 @@ void FdEntity::Clear()
             ino_t cur_inode = GetInode();
             if(0 != cur_inode && cur_inode == inode){
                 CacheFileStat cfstat(path.c_str());
-                if(!pagelist.Serialize(cfstat, inode)){
+                if(!pagelist.Serialize(cfstat, inode, get_meta_etag(orgmeta))){
                     S3FS_PRN_WARN("failed to save cache stat file(%s).", path.c_str());
                 }
             }
@@ -242,7 +256,7 @@ void FdEntity::Close(int fd)
             ino_t cur_inode = GetInode();
             if(0 != cur_inode && cur_inode == inode){
                 CacheFileStat cfstat(path.c_str());
-                if(!pagelist.Serialize(cfstat, inode)){
+                if(!pagelist.Serialize(cfstat, inode, get_meta_etag(orgmeta))){
                     S3FS_PRN_WARN("failed to save cache stat file(%s).", path.c_str());
                 }
             }
@@ -470,9 +484,39 @@ int FdEntity::Open(const headers_t* pmeta, off_t size, const FileTimes& ts_times
             pcfstat = std::make_unique<CacheFileStat>(path.c_str());
 
             // try to open cache file
-            if( -1 != (physical_fd = open(cachepath.c_str(), O_RDWR)) &&
-                0 != (inode = FdEntity::GetInode(physical_fd))        &&
-                pagelist.Deserialize(*pcfstat, inode))
+            std::string cache_etag;
+            bool        is_cache_loaded = (-1 != (physical_fd = open(cachepath.c_str(), O_RDWR)) &&
+                                           0 != (inode = FdEntity::GetInode(physical_fd))        &&
+                                           pagelist.Deserialize(*pcfstat, inode, &cache_etag));
+
+            // [NOTE]
+            // The mtime check above can not find all replaced objects.
+            // (Last-Modified has only seconds, clocks of clients differ,
+            // and some clients set an old x-amz-meta-mtime.)
+            // If such a cache file is used, the old data is returned with
+            // the size of the new object.
+            // So if the object has an ETag and the cache file was not made
+            // from the object with the same ETag, the cache file is discarded.
+            // It is unlinked(not truncated), because a detached entity may
+            // still use it through its mirror file.
+            //
+            std::string obj_etag = (pmeta ? get_meta_etag(*pmeta) : std::string());
+            if(is_cache_loaded && !obj_etag.empty() && cache_etag != obj_etag){
+                S3FS_PRN_INFO("cache file is stale(etag: cache=%s, object=%s), removing: %s", cache_etag.c_str(), obj_etag.c_str(), cachepath.c_str());
+                if(0 != unlink(cachepath.c_str()) && ENOENT != errno){
+                    const int save_errno = errno;
+                    S3FS_PRN_ERR("failed to remove stale cache file(%s) by errno(%d).", cachepath.c_str(), save_errno);
+                    close(physical_fd);
+                    physical_fd = -1;
+                    inode       = 0;
+                    pagelist.Init(0, false, false);
+                    return (0 == save_errno ? -EIO : -save_errno);
+                }
+                pagelist.Init(0, false, false);
+                is_cache_loaded = false;
+            }
+
+            if(is_cache_loaded)
             {
                 // succeed to open cache file and to load stats data
                 st = {};
@@ -609,7 +653,7 @@ int FdEntity::Open(const headers_t* pmeta, off_t size, const FileTimes& ts_times
 
         // reset cache stat file
         if(need_save_csf && pcfstat.get()){
-            if(!pagelist.Serialize(*pcfstat, inode)){
+            if(!pagelist.Serialize(*pcfstat, inode, (pmeta ? get_meta_etag(*pmeta) : std::string()))){
                 S3FS_PRN_WARN("failed to save cache stat file(%s), but continue...", path.c_str());
             }
         }
@@ -1348,7 +1392,7 @@ int FdEntity::RowFlushHasLock(int fd, const char* tpath, bool force_sync)
         ino_t cur_inode = GetInode();
         if(0 != cur_inode && cur_inode == inode){
             CacheFileStat cfstat(path.c_str());
-            if(!pagelist.Serialize(cfstat, inode)){
+            if(!pagelist.Serialize(cfstat, inode, get_meta_etag(orgmeta))){
                 S3FS_PRN_WARN("failed to save cache stat file(%s).", path.c_str());
             }
         }

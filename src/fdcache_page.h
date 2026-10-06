@@ -22,6 +22,7 @@
 #define S3FS_FDCACHE_PAGE_H_
 
 #include <cstdint>
+#include <string>
 #include <sys/types.h>
 #include <vector>
 
@@ -93,7 +94,7 @@ class PageList
 
         void Clear();
         bool Parse(off_t new_pos);
-        bool Serialize(const CacheFileStat& file, ino_t inode) const;
+        bool Serialize(const CacheFileStat& file, ino_t inode, const std::string& etag = std::string()) const;
 
     public:
         static void FreeList(fdpage_list_t& list);
@@ -122,7 +123,7 @@ class PageList
         void ClearAllModified();
 
         void Compress();
-        bool Deserialize(CacheFileStat& file, ino_t inode);
+        bool Deserialize(CacheFileStat& file, ino_t inode, std::string* petag = nullptr);
         void Dump() const;
         bool CompareSparseFile(int fd, size_t file_size, fdpage_list_t& err_area_list, fdpage_list_t& warn_area_list) const;
 };
