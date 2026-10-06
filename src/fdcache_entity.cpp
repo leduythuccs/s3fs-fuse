@@ -452,8 +452,18 @@ int FdEntity::Open(const headers_t* pmeta, off_t size, const FileTimes& ts_times
         // set original headers and set size.
         off_t new_size = (0 <= size ? size : size_orgmeta);
         if(pmeta){
+            // [NOTE]
+            // The ETag in orgmeta means the object which the loaded data
+            // came from, so it is not replaced by the ETag in new headers.
+            //
+            std::string etag = get_meta_etag(orgmeta);
             orgmeta  = *pmeta;
             size_orgmeta = get_size(orgmeta);
+            if(etag.empty()){
+                orgmeta.erase("etag");
+            }else{
+                orgmeta["etag"] = etag;
+            }
         }
         size_orgmeta = std::min(new_size, size_orgmeta);
 
@@ -1035,11 +1045,11 @@ int FdEntity::Load(off_t start, off_t size, bool is_modified_flag)
             // download
             if(S3fsCurl::GetMultipartSize() <= need_load_size && !nomultipart){
                 // parallel request
-                result = parallel_get_object_request(path, physical_fd, iter->offset, need_load_size);
+                result = parallel_get_object_request(path, physical_fd, iter->offset, need_load_size, get_meta_etag(orgmeta));
             }else{
                 // single request
                 if(0 < need_load_size){
-                    result = get_object_request(path, physical_fd, iter->offset, need_load_size);
+                    result = get_object_request(path, physical_fd, iter->offset, need_load_size, get_meta_etag(orgmeta));
                 }else{
                     result = 0;
                 }
@@ -1161,7 +1171,7 @@ int FdEntity::NoCacheLoadAndPost(PseudoFdInfo* pseudo_obj, off_t start, off_t si
                 // (the area beyond it remains zeros)
                 if(iter->offset < size_orgmeta){
                     off_t download_size = std::min(iter->bytes, size_orgmeta - iter->offset);
-                    if(0 != (result = get_object_request(path, tmpfd, iter->offset, download_size))){
+                    if(0 != (result = get_object_request(path, tmpfd, iter->offset, download_size, get_meta_etag(orgmeta)))){
                         S3FS_PRN_ERR("failed to get object(start=%lld, size=%lld) for file(physical_fd=%d).", static_cast<long long int>(iter->offset), static_cast<long long int>(download_size), tmpfd);
                         break;
                     }
@@ -1378,6 +1388,15 @@ int FdEntity::RowFlushHasLock(int fd, const char* tpath, bool force_sync)
     //
     if(0 != result && !cachepath.empty()){
         FdManager::DeleteCacheFile(tpath);
+    }
+
+    // [NOTE]
+    // The uploaded object has a new ETag which is not known here.
+    // The data is not from the object which has the old ETag anymore,
+    // so remove it.
+    //
+    if(0 == result){
+        orgmeta.erase("etag");
     }
 
     // [NOTE]
@@ -2505,6 +2524,13 @@ bool FdEntity::MergeOrgMeta(headers_t& updatemeta)
     }
     updatemeta = orgmeta;
     orgmeta.erase("x-amz-copy-source");
+
+    // [NOTE]
+    // The headers is put by copying the object, then the ETag may change.
+    // And the ETag in updatemeta may be the one of a newer object than
+    // the loaded data. So the ETag is not known.
+    //
+    orgmeta.erase("etag");
 
     // update ctime/mtime/atime
     struct timespec mtime = get_mtime(updatemeta, false);      // not overcheck

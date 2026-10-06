@@ -193,6 +193,7 @@ struct parallel_get_object_req_thparam
     off_t       size          = 0;
     sse_type_t  ssetype       = sse_type_t::SSE_DISABLE;
     std::string ssevalue;
+    std::string etag;
     std::mutex* pthparam_lock = nullptr;
     int*        pretrycount   = nullptr;
     int*        presult       = nullptr;
@@ -207,6 +208,7 @@ struct get_object_req_thparam
     int         fd     = -1;
     off_t       start  = 0;
     off_t       size   = 0;
+    std::string etag;
     int         result = 0;
 };
 
@@ -246,8 +248,8 @@ int mix_multipart_upload_request(const std::string& path, const headers_t& meta,
 int complete_multipart_upload_request(const std::string& path, const std::string& upload_id, const etaglist_t& parts);
 int abort_multipart_upload_request(const std::string& path, const std::string& upload_id);
 int multipart_put_head_request(const std::string& strfrom, const std::string& strto, off_t size, const headers_t& meta);
-int parallel_get_object_request(const std::string& path, int fd, off_t start, off_t size);
-int get_object_request(const std::string& path, int fd, off_t start, off_t size);
+int parallel_get_object_request(const std::string& path, int fd, off_t start, off_t size, const std::string& etag = std::string());
+int get_object_request(const std::string& path, int fd, off_t start, off_t size, const std::string& etag = std::string());
 
 //-------------------------------------------------------------------
 // Direct Call Utility Functions

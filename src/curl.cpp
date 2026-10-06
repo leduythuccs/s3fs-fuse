@@ -138,6 +138,7 @@ signature_type_t S3fsCurl::signature_type      = signature_type_t::V4_ONLY;     
 bool             S3fsCurl::is_unsigned_payload = false;          // default
 bool             S3fsCurl::is_ua               = true;           // default
 bool             S3fsCurl::listobjectsv2       = false;          // default
+bool             S3fsCurl::download_if_match   = false;          // default
 bool             S3fsCurl::requester_pays      = false;          // default
 std::string      S3fsCurl::proxy_url;
 bool             S3fsCurl::proxy_http          = false;
@@ -2086,6 +2087,12 @@ int S3fsCurl::RequestPerform(bool dontAddAuthHeaders /*=false*/)
                         result = -ENOENT;
                         break;
 
+                    case 412:
+                        // only GET with If-Match(download_if_match option)
+                        S3FS_PRN_WARN("HTTP response code 412 was returned, the object(%s) was replaced after it was opened, returning ESTALE", path.c_str());
+                        result = -ESTALE;
+                        break;
+
                     case 416:
                         S3FS_PRN_INFO3("HTTP response code 416 was returned, returning EIO");
                         result = -EIO;
@@ -3167,7 +3174,7 @@ int S3fsCurl::PutRequest(const char* tpath, const headers_t& meta, int fd)
     return result;
 }
 
-int S3fsCurl::PreGetObjectRequest(const char* tpath, int fd, off_t start, off_t size, sse_type_t ssetype, const std::string& ssevalue)
+int S3fsCurl::PreGetObjectRequest(const char* tpath, int fd, off_t start, off_t size, sse_type_t ssetype, const std::string& ssevalue, const std::string& etag)
 {
     S3FS_PRN_INFO3("[tpath=%s][start=%lld][size=%lld]", SAFESTRPTR(tpath), static_cast<long long>(start), static_cast<long long>(size));
 
@@ -3188,6 +3195,15 @@ int S3fsCurl::PreGetObjectRequest(const char* tpath, int fd, off_t start, off_t 
         range       += "-";
         range       += std::to_string(start + size - 1);
         requestHeaders = curl_slist_sort_insert(requestHeaders, "Range", range.c_str());
+    }
+    // [NOTE]
+    // With download_if_match, only the object which has the ETag the file
+    // was opened with is read. If the object was replaced, S3 returns 412
+    // instead of the new object's bytes, which would be mixed with the old
+    // data already loaded.
+    //
+    if(S3fsCurl::download_if_match && !etag.empty()){
+        requestHeaders = curl_slist_sort_insert(requestHeaders, "If-Match", etag.c_str());
     }
     // SSE-C
     if(sse_type_t::SSE_C == ssetype){
@@ -3216,7 +3232,7 @@ int S3fsCurl::PreGetObjectRequest(const char* tpath, int fd, off_t start, off_t 
     return 0;
 }
 
-int S3fsCurl::GetObjectRequest(const char* tpath, int fd, off_t start, off_t size, sse_type_t ssetype, const std::string& ssevalue)
+int S3fsCurl::GetObjectRequest(const char* tpath, int fd, off_t start, off_t size, sse_type_t ssetype, const std::string& ssevalue, const std::string& etag)
 {
     int result;
 
@@ -3226,7 +3242,7 @@ int S3fsCurl::GetObjectRequest(const char* tpath, int fd, off_t start, off_t siz
         return -EINVAL;
     }
 
-    if(0 != (result = PreGetObjectRequest(tpath, fd, start, size, ssetype, ssevalue))){
+    if(0 != (result = PreGetObjectRequest(tpath, fd, start, size, ssetype, ssevalue, etag))){
         return result;
     }
     if(!fpLazySetup || !fpLazySetup(this)){

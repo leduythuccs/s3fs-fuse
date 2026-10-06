@@ -445,7 +445,7 @@ void* get_object_req_threadworker(S3fsCurl& s3fscurl, void* arg)
 
     s3fscurl.SetUseAhbe(false);
 
-    pthparam->result = s3fscurl.GetObjectRequest(pthparam->path.c_str(), pthparam->fd, pthparam->start, pthparam->size, ssetype, ssevalue);
+    pthparam->result = s3fscurl.GetObjectRequest(pthparam->path.c_str(), pthparam->fd, pthparam->start, pthparam->size, ssetype, ssevalue, pthparam->etag);
 
     return reinterpret_cast<void*>(pthparam->result);
 }
@@ -590,7 +590,7 @@ void* parallel_get_object_req_threadworker(S3fsCurl& s3fscurl, void* arg)
     int result = 0;
     while(true){
         // Request
-        result = s3fscurl.GetObjectRequest(pthparam->path.c_str(), pthparam->fd, pthparam->start, pthparam->size, pthparam->ssetype, pthparam->ssevalue);
+        result = s3fscurl.GetObjectRequest(pthparam->path.c_str(), pthparam->fd, pthparam->start, pthparam->size, pthparam->ssetype, pthparam->ssevalue, pthparam->etag);
 
         // Check result
         bool     isResetOffset= true;
@@ -616,6 +616,11 @@ void* parallel_get_object_req_threadworker(S3fsCurl& s3fscurl, void* arg)
             }else if(responseCode == 404){
                 // set path to not found list
                 S3FS_PRN_WARN("Get Object Request(%s) got 404 response code.", pthparam->path.c_str());
+                break;
+
+            }else if(responseCode == 412){
+                // the object was replaced(download_if_match), retrying does not help
+                S3FS_PRN_WARN("Get Object Request(%s) got 412 response code.", pthparam->path.c_str());
                 break;
 
             }else if(responseCode == 500){
@@ -1407,7 +1412,7 @@ int multipart_put_head_request(const std::string& strfrom, const std::string& st
 //
 // Calls S3fsCurl::ParallelGetObjectRequest via parallel_get_object_req_threadworker
 //
-int parallel_get_object_request(const std::string& path, int fd, off_t start, off_t size)
+int parallel_get_object_request(const std::string& path, int fd, off_t start, off_t size, const std::string& etag)
 {
     S3FS_PRN_INFO3("[path=%s][fd=%d][start=%lld][size=%lld]", path.c_str(), fd, static_cast<long long int>(start), static_cast<long long int>(size));
 
@@ -1437,6 +1442,7 @@ int parallel_get_object_request(const std::string& path, int fd, off_t start, of
         thargs->size          = chunk;
         thargs->ssetype       = ssetype;
         thargs->ssevalue      = ssevalue;
+        thargs->etag          = etag;
         thargs->pthparam_lock = &thparam_lock;
         thargs->pretrycount   = &retrycount;
         thargs->presult       = &req_result;
@@ -1480,7 +1486,7 @@ int parallel_get_object_request(const std::string& path, int fd, off_t start, of
 //
 // Calls S3fsCurl::GetObjectRequest via get_object_req_threadworker
 //
-int get_object_request(const std::string& path, int fd, off_t start, off_t size)
+int get_object_request(const std::string& path, int fd, off_t start, off_t size, const std::string& etag)
 {
     // parameter for thread worker
     get_object_req_thparam thargs;
@@ -1488,6 +1494,7 @@ int get_object_request(const std::string& path, int fd, off_t start, off_t size)
     thargs.fd     = fd;
     thargs.start  = start;
     thargs.size   = size;
+    thargs.etag   = etag;
     thargs.result = 0;
 
     // make parameter for thread pool

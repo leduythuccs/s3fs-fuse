@@ -6033,6 +6033,10 @@ static int my_fuse_opt_proc(void* data, const char* arg, int key, struct fuse_ar
             revalidate_open = true;
             return 0;
         }
+        else if(0 == strcmp(arg, "download_if_match")){
+            S3fsCurl::SetDownloadIfMatch(true);
+            return 0;
+        }
         else if(0 == strcmp(arg, "dummy_stat")){
             dummy_stat = true;
             return 0;

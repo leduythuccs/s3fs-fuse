@@ -156,6 +156,7 @@ class S3fsCurl
         static bool             is_unsigned_payload;
         static bool             is_ua;             // User-Agent
         static bool             listobjectsv2;
+        static bool             download_if_match;
         static bool             requester_pays;
         static std::string      proxy_url;
         static bool             proxy_http;
@@ -314,6 +315,8 @@ class S3fsCurl
         static void InitUserAgent();
         static bool SetListObjectsV2(bool isset) { bool bresult = S3fsCurl::listobjectsv2; S3fsCurl::listobjectsv2 = isset; return bresult; }
         static bool IsListObjectsV2() { return S3fsCurl::listobjectsv2; }
+        static bool SetDownloadIfMatch(bool isset) { bool bresult = S3fsCurl::download_if_match; S3fsCurl::download_if_match = isset; return bresult; }
+        static bool IsDownloadIfMatch() { return S3fsCurl::download_if_match; }
         static bool SetRequesterPays(bool flag) { bool old_flag = S3fsCurl::requester_pays; S3fsCurl::requester_pays = flag; return old_flag; }
         static bool IsRequesterPays() { return S3fsCurl::requester_pays; }
         static bool SetProxy(const char* url);
@@ -335,8 +338,8 @@ class S3fsCurl
         [[nodiscard]] int HeadRequest(const char* tpath, headers_t& meta);
         [[nodiscard]] int PutHeadRequest(const char* tpath, const headers_t& meta, bool is_copy);
         [[nodiscard]] int PutRequest(const char* tpath, const headers_t& meta, int fd);
-        [[nodiscard]] int PreGetObjectRequest(const char* tpath, int fd, off_t start, off_t size, sse_type_t ssetype, const std::string& ssevalue);
-        [[nodiscard]] int GetObjectRequest(const char* tpath, int fd, off_t start, off_t size, sse_type_t ssetype, const std::string& ssevalue);
+        [[nodiscard]] int PreGetObjectRequest(const char* tpath, int fd, off_t start, off_t size, sse_type_t ssetype, const std::string& ssevalue, const std::string& etag = std::string());
+        [[nodiscard]] int GetObjectRequest(const char* tpath, int fd, off_t start, off_t size, sse_type_t ssetype, const std::string& ssevalue, const std::string& etag = std::string());
         [[nodiscard]] int CheckBucket(const char* check_path, bool compat_dir, bool force_no_sse);
         [[nodiscard]] int ListBucketRequest(const char* tpath, const char* query);
         [[nodiscard]] int PreMultipartUploadRequest(const char* tpath, const headers_t& meta, std::string& upload_id);
