@@ -99,6 +99,7 @@ static bool no_perm_check         = false;// default does perform POSIX permissi
 static bool dummy_stat            = false;// default fetches real per-object stat via HEAD during readdir
 static int readdir_max_pages      = 0;// default 0 = unlimited listing pages per readdir
 static bool revalidate_open       = false;// default does not re-check S3 for a file already opened by another handle
+static bool direct_io_all         = false;// default opens files with the kernel page cache
 static int max_keys_list_object   = 1000;// default is 1000
 static off_t max_dirty_data       = 5LL * 1024LL * 1024LL * 1024LL;
 static bool use_wtf8              = false;
@@ -1299,6 +1300,9 @@ static int s3fs_create(const char* _path, mode_t mode, struct fuse_file_info* fi
         return error;
     }
     ent->MarkDirtyNewFile();
+    if(direct_io_all){
+        fi->direct_io = 1;
+    }
     fi->fh = autoent.Detach();       // KEEP fdentity open;
 
     return 0;
@@ -3279,13 +3283,17 @@ static int s3fs_open(const char* _path, struct fuse_file_info* fi)
     // it(it may have been replaced or removed by another client).
     // A file which is modified or created locally(not uploaded yet) is
     // shared as before, because the local data takes priority.
+    // A file which is opened for writing is also shared as before. If it
+    // was detached, the writers would upload the old data over the object
+    // (which may have been uploaded by the other writers of this s3fs),
+    // and the next open would detach the new entity again.
     //
     bool         is_opened = FdManager::HasOpenEntityFd(path);
     AutoFdEntity revalent;
     FdEntity*    prevalent = nullptr;
     if(revalidate_open && is_opened){
         FdEntity* oent;
-        if(nullptr != (oent = revalent.OpenExistFdEntity(path)) && !oent->IsModified() && !oent->HaveUploadPending() && oent->HasRemoteOrigin()){
+        if(nullptr != (oent = revalent.OpenExistFdEntity(path)) && !oent->IsModified() && !oent->HaveUploadPending() && !oent->HasWritableFd() && oent->HasRemoteOrigin()){
             prevalent = oent;
         }else{
             revalent.Close();
@@ -3364,6 +3372,7 @@ static int s3fs_open(const char* _path, struct fuse_file_info* fi)
         return result;
     }
 
+    bool attr_changed = false;
     if(prevalent){
         // [NOTE]
         // meta was got by the HEAD request above(the stats cache was deleted),
@@ -3376,6 +3385,15 @@ static int s3fs_open(const char* _path, struct fuse_file_info* fi)
             revalent.Close();
             autoent.Close();
             FdManager::get()->DetachEntity(path);
+
+            // [NOTE]
+            // While the file was opened, getattr returned the size of the
+            // opened entity to the kernel, not the size in the stats cache.
+            // So the kernel may still have the old size even if the stats
+            // cache already has the new one, then reads are cut at(or run
+            // past) the wrong size. Always invalidate it.
+            //
+            attr_changed = true;
         }
         revalent.Close();
 
@@ -3390,7 +3408,6 @@ static int s3fs_open(const char* _path, struct fuse_file_info* fi)
     // Check whether the attributes given to the kernel at lookup are
     // different from the current object.
     //
-    bool attr_changed = false;
     if(has_prev){
         auto prev_etag = prev_meta.find("etag");
         auto cur_etag  = meta.find("etag");
@@ -3417,6 +3434,18 @@ static int s3fs_open(const char* _path, struct fuse_file_info* fi)
         invalidate_kernel_attr(_path);
     }
 
+    // [NOTE]
+    // The kernel has only one page cache for a path. While handles opened
+    // before the object was replaced are still reading the old data(the
+    // detached entity), the pages read through this handle would be put in
+    // the same page cache and read by those old handles. So this handle
+    // bypasses the page cache.
+    //
+    if(revalidate_open && FdManager::get()->HasDetachedEntity(path)){
+        S3FS_PRN_INFO("old data of %s is still opened, so open it with direct_io.", path);
+        fi->direct_io = 1;
+    }
+
     if (needs_flush){
         struct timespec ts_now;
         s3fs_realtime(ts_now);
@@ -3432,6 +3461,9 @@ static int s3fs_open(const char* _path, struct fuse_file_info* fi)
             StatCache::getStatCacheData()->DelStat(path);
             return result;
         }
+    }
+    if(direct_io_all){
+        fi->direct_io = 1;
     }
     fi->fh = autoent.Detach();       // KEEP fdentity open;
 
@@ -6031,6 +6063,10 @@ static int my_fuse_opt_proc(void* data, const char* arg, int key, struct fuse_ar
         }
         else if(0 == strcmp(arg, "revalidate_open")){
             revalidate_open = true;
+            return 0;
+        }
+        else if(0 == strcmp(arg, "direct_io")){
+            direct_io_all = true;
             return 0;
         }
         else if(0 == strcmp(arg, "download_if_match")){

@@ -837,6 +837,25 @@ bool FdManager::DetachEntity(const char* path)
     return detached;
 }
 
+// [NOTE]
+// Returns true if a detached entity of path is still opened, it means that
+// handles opened before the object was replaced are reading the old data.
+//
+bool FdManager::HasDetachedEntity(const char* path)
+{
+    if(!path || '\0' == path[0]){
+        return false;
+    }
+    const std::lock_guard<std::mutex> lock(FdManager::fd_manager_lock);
+
+    for(const auto& [entpath, entity] : fent){
+        if(entity && entity->IsDetached() && entity->IsOpen() && entity->GetROPath() == path){
+            return true;
+        }
+    }
+    return false;
+}
+
 bool FdManager::ChangeEntityToTempPath(std::shared_ptr<FdEntity> ent, const char* path)
 {
     // [NOTE]

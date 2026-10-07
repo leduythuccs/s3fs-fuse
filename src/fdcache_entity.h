@@ -178,6 +178,7 @@ class FdEntity : public std::enable_shared_from_this<FdEntity>
         bool MergeOrgMeta(headers_t& updatemeta);
         bool GetOrgMeta(headers_t& meta) const;
         bool HasRemoteOrigin() const;
+        bool HasWritableFd() const;
         bool IsRemoteChanged(const headers_t& meta) const;
         void MarkDetached() { detached = true; }
         bool IsDetached() const { return detached; }

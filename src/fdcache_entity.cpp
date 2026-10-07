@@ -2559,6 +2559,18 @@ bool FdEntity::GetOrgMeta(headers_t& meta) const
 // Only an object which was read from S3 has an ETag in its original headers.
 // A file created locally and not uploaded yet does not have it.
 //
+bool FdEntity::HasWritableFd() const
+{
+    const std::lock_guard<std::mutex> lock(fdent_lock);
+
+    for(auto iter = pseudo_fd_map.cbegin(); iter != pseudo_fd_map.cend(); ++iter){
+        if(iter->second && iter->second->Writable()){
+            return true;
+        }
+    }
+    return false;
+}
+
 bool FdEntity::HasRemoteOrigin() const
 {
     const std::lock_guard<std::mutex> lock(fdent_lock);
